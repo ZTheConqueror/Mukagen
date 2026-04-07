@@ -1,0 +1,396 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Noto+Sans+JP:wght@400;700&display=swap');
+
+*, *::before, *::after { box-sizing: border-box; }
+
+:root {
+  --bg:     #080b14;
+  --bg2:    #0d1120;
+  --bg3:    #131929;
+  --border: rgba(255,255,255,0.07);
+  --text:   #e2e8f0;
+  --muted:  #64748b;
+  --accent: #38bdf8;
+  --green:  #4ade80;
+  --red:    #f87171;
+  --radius: 16px;
+}
+
+html, body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Space Mono', 'Courier New', monospace;
+  -webkit-font-smoothing: antialiased;
+  /* Prevent pull-to-refresh fighting swipe */
+  overscroll-behavior: none;
+}
+
+/* ── APP SHELL ── */
+.app {
+  /* dvh = dynamic viewport height — accounts for Samsung/Chrome address bar */
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  overflow: hidden;
+  /* Prevent iOS bounce from interfering */
+  position: fixed;
+  inset: 0;
+}
+
+/* ── HEADER ── */
+.header {
+  flex-shrink: 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  padding: 12px 20px 0;
+  z-index: 20;
+}
+
+.header-inner {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.header-title {
+  font-family: 'Noto Sans JP', sans-serif;
+  font-size: 1.5rem;
+  font-weight: 700;
+  background: linear-gradient(135deg, #38bdf8, #818cf8, #e879f9);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  line-height: 1;
+}
+
+.header-sub {
+  color: var(--muted);
+  font-size: 0.65rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+.screen-tabs {
+  display: flex;
+}
+
+.tab-btn {
+  flex: 1;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font-family: 'Noto Sans JP', sans-serif;
+  font-size: 1rem;
+  font-weight: 700;
+  padding: 8px 0 10px;
+  cursor: pointer;
+  transition: color 0.2s, border-color 0.2s;
+}
+
+.tab-btn.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.tab-btn:hover:not(.active) { color: var(--text); }
+
+/* ── SWIPE SYSTEM ── */
+.swipe-wrapper {
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+  /* pan-y = browser handles vertical scroll natively; we handle horizontal */
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.screens-track {
+  display: flex;
+  width: 400%;
+  height: 100%;
+  transition: transform 0.38s cubic-bezier(0.4, 0, 0.2, 1);
+  will-change: transform;
+}
+
+.screen {
+  flex: 0 0 25%;
+  max-width: 25%;
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: 20px 16px 90px;
+  background: var(--bg);
+}
+
+/* ── TYPOGRAPHY ── */
+.screen-heading {
+  font-family: 'Space Mono', monospace;
+  font-size: 1.3rem;
+  font-weight: 700;
+  color: var(--text);
+  margin: 0 0 4px;
+  letter-spacing: -0.02em;
+}
+
+.screen-sub {
+  color: var(--muted);
+  font-size: 0.7rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin: 0 0 18px;
+}
+
+/* ── ADD ROW ── */
+.add-row {
+  display: flex;
+  gap: 10px;
+  margin: 16px 0 20px;
+}
+
+.add-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 13px 14px;
+  font-size: 0.9rem;
+  font-family: 'Space Mono', monospace;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--text);
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.add-row input:focus  { border-color: var(--accent); }
+.add-row input::placeholder { color: var(--muted); }
+
+.add-btn {
+  width: 48px;
+  height: 48px;
+  font-size: 1.5rem;
+  line-height: 1;
+  background: var(--accent);
+  color: var(--bg);
+  border: none;
+  border-radius: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.2s, transform 0.1s;
+}
+
+.add-btn:hover  { background: #7dd3fc; }
+.add-btn:active { transform: scale(0.93); }
+
+/* ── HABITS LIST ── */
+.habits-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.habit-card {
+  background: var(--bg3);
+  border-radius: var(--radius);
+  padding: 14px 14px 12px;
+  border-left: 4px solid var(--accent);
+  transition: border-color 0.3s, opacity 0.2s;
+}
+
+.habit-card.done { opacity: 0.7; }
+
+.habit-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 7px;
+}
+
+.habit-name {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--text);
+  word-break: break-word;
+  flex: 1;
+}
+
+.habit-actions {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.check-btn {
+  width: 34px; height: 34px;
+  border-radius: 50%;
+  border: 2px solid var(--c, #4ade80);
+  background: transparent;
+  color: var(--c, #4ade80);
+  font-size: 0.95rem;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex; align-items: center; justify-content: center;
+  font-family: 'Space Mono', monospace;
+  flex-shrink: 0;
+}
+
+.check-btn.checked {
+  background: var(--c, #4ade80);
+  color: #000;
+}
+
+.del-btn {
+  width: 26px; height: 26px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(248,113,113,0.1);
+  color: #f87171;
+  font-size: 1rem;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+
+.del-btn:hover { background: rgba(248,113,113,0.25); }
+
+.habit-streak {
+  font-size: 0.75rem;
+  font-weight: 600;
+  margin-bottom: 9px;
+  letter-spacing: 0.04em;
+}
+
+.week-dots {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 7px;
+}
+
+.week-dot {
+  flex: 1;
+  height: 5px;
+  border-radius: 3px;
+  background: rgba(255,255,255,0.07);
+  transition: background 0.2s;
+}
+
+.week-dot.filled { background: var(--c, #4ade80); }
+
+.habit-progress-bar {
+  height: 3px;
+  background: rgba(255,255,255,0.06);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-bottom: 4px;
+}
+
+.habit-progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.4s ease;
+}
+
+.habit-meta {
+  font-size: 0.65rem;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+}
+
+/* ── EMPTY STATE ── */
+.empty-state {
+  text-align: center;
+  padding: 50px 20px;
+  color: var(--muted);
+}
+
+.empty-icon { font-size: 2.8rem; margin-bottom: 14px; }
+
+.empty-state p {
+  font-size: 0.85rem;
+  line-height: 1.8;
+  color: var(--muted);
+  margin: 0;
+}
+
+/* ── GAUGES SCREEN ──
+   2-column grid. Each cell contains the SVG gauge + caption all self-contained.
+   The SVG now renders its own label, so no extra text sits outside/overlapping. */
+.gauges-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  padding-top: 8px;
+}
+
+.gauge-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: var(--bg3);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  padding: 14px 6px 10px;
+  /* No fixed height — let content breathe */
+}
+
+.gauge-caption {
+  font-size: 0.62rem;
+  color: var(--muted);
+  text-align: center;
+  letter-spacing: 0.05em;
+  margin-top: 2px;
+  padding: 0 4px;
+  line-height: 1.4;
+}
+
+/* ── NAV DOTS ── */
+.nav-dots {
+  position: fixed;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 10px;
+  z-index: 100;
+}
+
+.dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255,255,255,0.18);
+  cursor: pointer;
+  transition: all 0.25s;
+  padding: 0;
+}
+
+.dot.active {
+  background: var(--accent);
+  transform: scale(1.6);
+  box-shadow: 0 0 8px var(--accent);
+}
+
+.dot:hover:not(.active) { background: rgba(255,255,255,0.38); }
+
+/* ── SCROLLBAR ── */
+.screen::-webkit-scrollbar       { width: 3px; }
+.screen::-webkit-scrollbar-track { background: transparent; }
+.screen::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+/* ── RESPONSIVE: smaller phones ── */
+@media (max-width: 380px) {
+  .header-title { font-size: 1.2rem; }
+  .screen { padding: 16px 12px 80px; }
+  .gauges-grid { gap: 8px; }
+}
