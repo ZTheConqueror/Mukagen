@@ -394,13 +394,3 @@ html, body {
   .screen { padding: 16px 12px 80px; }
   .gauges-grid { gap: 8px; }
 }
-
-/* ── 5-SCREEN LAYOUT ── */
-.screens-5 {
-  width: 500%;
-}
-
-.screens-5 .screen {
-  flex: 0 0 20%;
-  max-width: 20%;
-}
