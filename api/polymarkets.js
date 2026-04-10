@@ -9,9 +9,12 @@ export default async function handler(req, res) {
     // tag_id=100381 is the official Polymarket weather tag from their docs
     // Also search by question title as a second pass
     const fetches = await Promise.allSettled([
-      fetch('https://gamma-api.polymarket.com/markets?tag_id=100381&active=true&closed=false&limit=100&order=volume_24hr&ascending=false', { headers }).then(r => r.ok ? r.json() : []),
-      fetch('https://gamma-api.polymarket.com/markets?tag_id=100380&active=true&closed=false&limit=100&order=volume_24hr&ascending=false', { headers }).then(r => r.ok ? r.json() : []),
-    ]);
+  // ❗ REMOVED tag_id + ❗ CHANGED limit + ❗ KEPT volume sort
+  fetch('https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=200&order=volume_24hr&ascending=false', { headers }).then(r => r.ok ? r.json() : []),
+
+  // ❗ REMOVED tag_id + ❗ CHANGED limit + ❗ CHANGED order field
+  fetch('https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=200&order=created_at&ascending=false', { headers }).then(r => r.ok ? r.json() : []),
+]);
 
     const seen = new Set();
     const all = [];
