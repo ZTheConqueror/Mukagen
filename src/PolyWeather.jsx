@@ -104,19 +104,9 @@ async function fetchForecast(city) {
 // Fetch active Polymarket weather markets
 async function fetchPolyWeatherMarkets() {
   try {
-    const params = new URLSearchParams({
-      tag_slug: "weather",
-      active: "true",
-      closed: "false",
-      limit: 100,
-    });
-
-    const res = await fetch(`/api/polymarkets?${params}`);
-
+    const res = await fetch('/api/polymarkets');
     if (!res.ok) throw new Error(`API ${res.status}`);
-
     const data = await res.json();
-
     return Array.isArray(data) ? data : (data.markets || []);
   } catch (e) {
     console.error("Polymarket fetch error:", e);
@@ -136,10 +126,24 @@ function computeSignal(market, forecast, parsed, city) {
     return { marketProb: null, ourProb: null, edge: null, signal: 'INSUFFICIENT_DATA' };
   }
 
-  // Market probability: in Polymarket, YES token price ≈ probability (0-1)
-  const outcomes = market.outcomes || [];
-  const yesOutcome = outcomes.find(o => o.name?.toLowerCase() === 'yes') || outcomes[0];
-  const marketProb = yesOutcome ? parseFloat(yesOutcome.price) : null;
+  // Gamma API returns outcomes as a JSON string e.g. '["Yes","No"]'
+  // and outcomePrices as a JSON string e.g. '["0.65","0.35"]'
+  // Parse both safely and find the YES price
+  let marketProb = null;
+  try {
+    const outcomes = typeof market.outcomes === 'string'
+      ? JSON.parse(market.outcomes)
+      : (Array.isArray(market.outcomes) ? market.outcomes : []);
+    const prices = typeof market.outcomePrices === 'string'
+      ? JSON.parse(market.outcomePrices)
+      : (Array.isArray(market.outcomePrices) ? market.outcomePrices : []);
+    // Find YES index — usually index 0 but confirm
+    const yesIdx = outcomes.findIndex(o => String(o).toLowerCase() === 'yes');
+    const idx = yesIdx >= 0 ? yesIdx : 0;
+    if (prices[idx] !== undefined) marketProb = parseFloat(prices[idx]);
+  } catch (e) {
+    // couldn't parse
+  }
   if (marketProb === null) return { marketProb: null, ourProb: null, edge: null, signal: 'NO_PRICE' };
 
   const daily = forecast.daily;
