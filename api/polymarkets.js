@@ -43,9 +43,28 @@ export default async function handler(req, res) {
     // Filter to ONLY "Highest temperature in" or "Lowest temperature in" markets
     // This matches the exact Polymarket title format from their weather category
     const temp = all.filter(m => {
-      const q = (m.question || '').toLowerCase();
-      return q.includes('highest temperature in') || q.includes('lowest temperature in');
-    });
+  const q = (m.question || '').toLowerCase();
+
+  // Check tags for WEATHER category
+  const tags = (m.tags || []).map(t => (t.slug || t.name || '').toLowerCase());
+
+  const isWeatherTag =
+    tags.includes('weather') ||
+    tags.some(t => t.includes('weather'));
+
+  // Check it's a temperature-type market
+  const isTemp =
+    q.includes('temperature') ||
+    q.includes('temp');
+
+  // Specifically target "highest temperature" style markets
+  const isHighTemp =
+    q.includes('highest temperature') ||
+    q.includes('high temperature') ||
+    q.includes('max temperature');
+
+  return isWeatherTag && isTemp && isHighTemp;
+});
 
     // If that returns nothing, fall back to any weather-tagged market
     const final = temp.length > 0 ? temp : all;
