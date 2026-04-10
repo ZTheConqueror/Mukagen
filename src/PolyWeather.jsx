@@ -11,14 +11,29 @@ const OPEN_METEO = "https://api.open-meteo.com/v1/forecast";
 
 // ── CITIES CONFIG ───────────────────────────────────────────────────────────
 const CITIES = [
-  { name: "New York",     lat: 40.7128,  lon: -74.0060,  state: "NY", noaaOffice: "OKX" },
-  { name: "Los Angeles",  lat: 34.0522,  lon: -118.2437, state: "CA", noaaOffice: "LOX" },
-  { name: "Chicago",      lat: 41.8781,  lon: -87.6298,  state: "IL", noaaOffice: "LOT" },
-  { name: "Miami",        lat: 25.7617,  lon: -80.1918,  state: "FL", noaaOffice: "MFL" },
-  { name: "Dallas",       lat: 32.7767,  lon: -96.7970,  state: "TX", noaaOffice: "FWD" },
-  { name: "Seattle",      lat: 47.6062,  lon: -122.3321, state: "WA", noaaOffice: "SEW" },
-  { name: "Denver",       lat: 39.7392,  lon: -104.9903, state: "CO", noaaOffice: "BOU" },
-  { name: "Phoenix",      lat: 33.4484,  lon: -112.0740, state: "AZ", noaaOffice: "PSR" },
+  { name: "New York",     lat: 40.7128,  lon: -74.0060  },
+  { name: "Los Angeles",  lat: 34.0522,  lon: -118.2437 },
+  { name: "Chicago",      lat: 41.8781,  lon: -87.6298  },
+  { name: "Miami",        lat: 25.7617,  lon: -80.1918  },
+  { name: "Dallas",       lat: 32.7767,  lon: -96.7970  },
+  { name: "Seattle",      lat: 47.6062,  lon: -122.3321 },
+  { name: "Denver",       lat: 39.7392,  lon: -104.9903 },
+  { name: "Phoenix",      lat: 33.4484,  lon: -112.0740 },
+  { name: "Boston",       lat: 42.3601,  lon: -71.0589  },
+  { name: "Atlanta",      lat: 33.7490,  lon: -84.3880  },
+  { name: "Houston",      lat: 29.7604,  lon: -95.3698  },
+  { name: "Las Vegas",    lat: 36.1699,  lon: -115.1398 },
+  // International — Polymarket has active markets for all of these
+  { name: "London",       lat: 51.5074,  lon: -0.1278   },
+  { name: "Tokyo",        lat: 35.6762,  lon: 139.6503  },
+  { name: "Seoul",        lat: 37.5665,  lon: 126.9780  },
+  { name: "Paris",        lat: 48.8566,  lon: 2.3522    },
+  { name: "Berlin",       lat: 52.5200,  lon: 13.4050   },
+  { name: "Sydney",       lat: -33.8688, lon: 151.2093  },
+  { name: "Dubai",        lat: 25.2048,  lon: 55.2708   },
+  { name: "Singapore",    lat: 1.3521,   lon: 103.8198  },
+  { name: "Shanghai",     lat: 31.2304,  lon: 121.4737  },
+  { name: "Bangkok",      lat: 13.7563,  lon: 100.5018  },
 ];
 
 // ── HELPERS ──────────────────────────────────────────────────────────────────
@@ -73,14 +88,11 @@ function parseWeatherQuestion(question) {
 function extractCity(question) {
   const q = question.toLowerCase();
   for (const city of CITIES) {
-    if (q.includes(city.name.toLowerCase()) || q.includes(city.state.toLowerCase())) {
-      return city;
-    }
+    if (q.includes(city.name.toLowerCase())) return city;
   }
-  // Common abbreviations
-  if (q.includes('nyc') || q.includes('new york')) return CITIES[0];
-  if (q.includes('la') || q.includes('los angeles')) return CITIES[1];
-  if (q.includes('chi') || q.includes('chicago')) return CITIES[2];
+  // Common abbreviations — only whole-word or unambiguous matches
+  if (/\bnyc\b/.test(q) || q.includes('new york')) return CITIES[0];
+  if (/\bla\b/.test(q)  || q.includes('los angeles')) return CITIES[1];
   return null;
 }
 
@@ -104,9 +116,19 @@ async function fetchForecast(city) {
 // Fetch active Polymarket weather markets
 async function fetchPolyWeatherMarkets() {
   try {
-    const res = await fetch('/api/polymarkets');
+    const params = new URLSearchParams({
+      tag_slug: "weather",
+      active: "true",
+      closed: "false",
+      limit: 100,
+    });
+
+    const res = await fetch(`/api/polymarkets?${params}`);
+
     if (!res.ok) throw new Error(`API ${res.status}`);
+
     const data = await res.json();
+
     return Array.isArray(data) ? data : (data.markets || []);
   } catch (e) {
     console.error("Polymarket fetch error:", e);
@@ -126,16 +148,11 @@ function computeSignal(market, forecast, parsed, city) {
     return { marketProb: null, ourProb: null, edge: null, signal: 'INSUFFICIENT_DATA' };
   }
 
-  // Gamma returns outcomes/outcomePrices as JSON strings — parse safely
-  let marketProb = null;
-  try {
-    const outcomes = typeof market.outcomes === 'string' ? JSON.parse(market.outcomes) : (market.outcomes || []);
-    const prices   = typeof market.outcomePrices === 'string' ? JSON.parse(market.outcomePrices) : (market.outcomePrices || []);
-    const yesIdx   = Array.isArray(outcomes) ? outcomes.findIndex(o => String(o).toLowerCase() === 'yes') : -1;
-    const idx      = yesIdx >= 0 ? yesIdx : 0;
-    if (Array.isArray(prices) && prices[idx] !== undefined) marketProb = parseFloat(prices[idx]);
-  } catch(e) { /* parse failed */ }
-  if (marketProb === null || isNaN(marketProb)) return { marketProb: null, ourProb: null, edge: null, signal: 'NO_PRICE' };
+  // Market probability: in Polymarket, YES token price ≈ probability (0-1)
+  const outcomes = market.outcomes || [];
+  const yesOutcome = outcomes.find(o => o.name?.toLowerCase() === 'yes') || outcomes[0];
+  const marketProb = yesOutcome ? parseFloat(yesOutcome.price) : null;
+  if (marketProb === null) return { marketProb: null, ourProb: null, edge: null, signal: 'NO_PRICE' };
 
   const daily = forecast.daily;
   if (!daily) return { marketProb, ourProb: null, edge: null, signal: 'NO_FORECAST' };
@@ -331,8 +348,8 @@ function SignalCard({ market, forecast, city }) {
       </div>
 
       {/* Polymarket link */}
-      {(market.polyUrl || market.eventSlug || market.slug) && (
-        <a href={market.polyUrl || `https://polymarket.com/event/${market.eventSlug || market.slug}`} target="_blank" rel="noopener noreferrer"
+      {market.slug && (
+        <a href={`https://polymarket.com/event/${market.slug}`} target="_blank" rel="noopener noreferrer"
           style={{ display:'block', marginTop:'8px', color:'#38bdf8', fontSize:'0.6rem', fontFamily:"'Courier New',monospace", letterSpacing:'0.08em', textDecoration:'none' }}>
           → VIEW ON POLYMARKET ↗
         </a>
@@ -398,38 +415,46 @@ export default function PolyWeather() {
     setLoading(true);
     setError(null);
     try {
-      // ── Step 1: fetch markets (safe — returns [] on any error) ──
       const rawMarkets = await fetchPolyWeatherMarkets();
+
+      // Filter to markets that mention weather and have a city we know
       const weatherMarkets = rawMarkets.filter(m => {
         const q = (m.question || '').toLowerCase();
-        return q.length > 0 &&
-          /temperature|rain|snow|weather|high|low|°|degree|precip|storm|wind/.test(q);
+        return q.includes('highest temperature in') || q.includes('lowest temperature in');
       });
+
       setMarkets(weatherMarkets);
       setLastUpdated(new Date());
+
+      // Fetch forecasts for all cities that appear in markets
+      setForecastLoading(true);
+      const citiesNeeded = new Set();
+      for (const m of weatherMarkets) {
+        const city = extractCity(m.question || '');
+        if (city) citiesNeeded.add(city.name);
+      }
+
+      // Always load all 8 cities
+      CITIES.forEach(c => citiesNeeded.add(c.name));
+
+      const forecastResults = {};
+      const cityList = CITIES.filter(c => citiesNeeded.has(c.name));
+      for (let i = 0; i < cityList.length; i++) {
+        const city = cityList[i];
+        try {
+          const f = await fetchForecast(city);
+          forecastResults[city.name] = f;
+          if (i < cityList.length - 1) await sleep(200); // gentle rate limiting
+        } catch(e) {
+          console.warn(`Forecast failed for ${city.name}:`, e);
+        }
+      }
+      setForecasts(forecastResults);
+      setForecastLoading(false);
     } catch(e) {
       setError(e.message);
     } finally {
       setLoading(false);
-    }
-
-    // ── Step 2: fetch forecasts SEPARATELY — never blocks markets render ──
-    setForecastLoading(true);
-    try {
-      const forecastResults = {};
-      for (let i = 0; i < CITIES.length; i++) {
-        try {
-          forecastResults[CITIES[i].name] = await fetchForecast(CITIES[i]);
-          if (i < CITIES.length - 1) await sleep(150);
-        } catch(e) {
-          console.warn(`Forecast failed for ${CITIES[i].name}:`, e);
-        }
-      }
-      setForecasts(forecastResults);
-    } catch(e) {
-      console.warn('Forecast batch failed:', e);
-    } finally {
-      setForecastLoading(false);
     }
   }, []);
 
@@ -463,8 +488,7 @@ export default function PolyWeather() {
   }, [enrichedMarkets, filterSignal, selectedCity, sortBy]);
 
   const buySignals = enrichedMarkets.filter(m => m.sig.signal==='BUY_YES'||m.sig.signal==='BUY_NO').length;
-  const edgeMarkets = enrichedMarkets.filter(m => m.sig.edge !== null && !isNaN(m.sig.edge));
-  const avgEdge = edgeMarkets.length > 0 ? edgeMarkets.reduce((s,m) => s + Math.abs(m.sig.edge), 0) / edgeMarkets.length : 0;
+  const avgEdge = enrichedMarkets.filter(m=>m.sig.edge!==null).reduce((s,m)=>s+Math.abs(m.sig.edge),0) / Math.max(1, enrichedMarkets.filter(m=>m.sig.edge!==null).length);
 
   // City forecast preview
   const previewCity = selectedCity ? CITIES.find(c=>c.name===selectedCity) : CITIES[0];
