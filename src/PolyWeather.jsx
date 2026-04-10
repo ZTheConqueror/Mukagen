@@ -126,25 +126,16 @@ function computeSignal(market, forecast, parsed, city) {
     return { marketProb: null, ourProb: null, edge: null, signal: 'INSUFFICIENT_DATA' };
   }
 
-  // Gamma API returns outcomes as a JSON string e.g. '["Yes","No"]'
-  // and outcomePrices as a JSON string e.g. '["0.65","0.35"]'
-  // Parse both safely and find the YES price
+  // Gamma returns outcomes/outcomePrices as JSON strings — parse safely
   let marketProb = null;
   try {
-    const outcomes = typeof market.outcomes === 'string'
-      ? JSON.parse(market.outcomes)
-      : (Array.isArray(market.outcomes) ? market.outcomes : []);
-    const prices = typeof market.outcomePrices === 'string'
-      ? JSON.parse(market.outcomePrices)
-      : (Array.isArray(market.outcomePrices) ? market.outcomePrices : []);
-    // Find YES index — usually index 0 but confirm
-    const yesIdx = outcomes.findIndex(o => String(o).toLowerCase() === 'yes');
-    const idx = yesIdx >= 0 ? yesIdx : 0;
-    if (prices[idx] !== undefined) marketProb = parseFloat(prices[idx]);
-  } catch (e) {
-    // couldn't parse
-  }
-  if (marketProb === null) return { marketProb: null, ourProb: null, edge: null, signal: 'NO_PRICE' };
+    const outcomes = typeof market.outcomes === 'string' ? JSON.parse(market.outcomes) : (market.outcomes || []);
+    const prices   = typeof market.outcomePrices === 'string' ? JSON.parse(market.outcomePrices) : (market.outcomePrices || []);
+    const yesIdx   = Array.isArray(outcomes) ? outcomes.findIndex(o => String(o).toLowerCase() === 'yes') : -1;
+    const idx      = yesIdx >= 0 ? yesIdx : 0;
+    if (Array.isArray(prices) && prices[idx] !== undefined) marketProb = parseFloat(prices[idx]);
+  } catch(e) { /* parse failed */ }
+  if (marketProb === null || isNaN(marketProb)) return { marketProb: null, ourProb: null, edge: null, signal: 'NO_PRICE' };
 
   const daily = forecast.daily;
   if (!daily) return { marketProb, ourProb: null, edge: null, signal: 'NO_FORECAST' };
@@ -407,48 +398,38 @@ export default function PolyWeather() {
     setLoading(true);
     setError(null);
     try {
+      // ── Step 1: fetch markets (safe — returns [] on any error) ──
       const rawMarkets = await fetchPolyWeatherMarkets();
-
-      // Filter to markets that mention weather and have a city we know
       const weatherMarkets = rawMarkets.filter(m => {
         const q = (m.question || '').toLowerCase();
-        return q.length > 0 && (
-          /temperature|rain|snow|weather|high|low|°|degree|precip|storm|wind/.test(q)
-        );
+        return q.length > 0 &&
+          /temperature|rain|snow|weather|high|low|°|degree|precip|storm|wind/.test(q);
       });
-
       setMarkets(weatherMarkets);
       setLastUpdated(new Date());
-
-      // Fetch forecasts for all cities that appear in markets
-      setForecastLoading(true);
-      const citiesNeeded = new Set();
-      for (const m of weatherMarkets) {
-        const city = extractCity(m.question || '');
-        if (city) citiesNeeded.add(city.name);
-      }
-
-      // Always load all 8 cities
-      CITIES.forEach(c => citiesNeeded.add(c.name));
-
-      const forecastResults = {};
-      const cityList = CITIES.filter(c => citiesNeeded.has(c.name));
-      for (let i = 0; i < cityList.length; i++) {
-        const city = cityList[i];
-        try {
-          const f = await fetchForecast(city);
-          forecastResults[city.name] = f;
-          if (i < cityList.length - 1) await sleep(200); // gentle rate limiting
-        } catch(e) {
-          console.warn(`Forecast failed for ${city.name}:`, e);
-        }
-      }
-      setForecasts(forecastResults);
-      setForecastLoading(false);
     } catch(e) {
       setError(e.message);
     } finally {
       setLoading(false);
+    }
+
+    // ── Step 2: fetch forecasts SEPARATELY — never blocks markets render ──
+    setForecastLoading(true);
+    try {
+      const forecastResults = {};
+      for (let i = 0; i < CITIES.length; i++) {
+        try {
+          forecastResults[CITIES[i].name] = await fetchForecast(CITIES[i]);
+          if (i < CITIES.length - 1) await sleep(150);
+        } catch(e) {
+          console.warn(`Forecast failed for ${CITIES[i].name}:`, e);
+        }
+      }
+      setForecasts(forecastResults);
+    } catch(e) {
+      console.warn('Forecast batch failed:', e);
+    } finally {
+      setForecastLoading(false);
     }
   }, []);
 
@@ -482,7 +463,8 @@ export default function PolyWeather() {
   }, [enrichedMarkets, filterSignal, selectedCity, sortBy]);
 
   const buySignals = enrichedMarkets.filter(m => m.sig.signal==='BUY_YES'||m.sig.signal==='BUY_NO').length;
-  const avgEdge = enrichedMarkets.filter(m=>m.sig.edge!==null).reduce((s,m)=>s+Math.abs(m.sig.edge),0) / Math.max(1, enrichedMarkets.filter(m=>m.sig.edge!==null).length);
+  const edgeMarkets = enrichedMarkets.filter(m => m.sig.edge !== null && !isNaN(m.sig.edge));
+  const avgEdge = edgeMarkets.length > 0 ? edgeMarkets.reduce((s,m) => s + Math.abs(m.sig.edge), 0) / edgeMarkets.length : 0;
 
   // City forecast preview
   const previewCity = selectedCity ? CITIES.find(c=>c.name===selectedCity) : CITIES[0];
