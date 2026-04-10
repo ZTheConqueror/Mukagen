@@ -419,9 +419,15 @@ export default function PolyWeather() {
 
       // Filter to markets that mention weather and have a city we know
       const weatherMarkets = rawMarkets.filter(m => {
-        const q = (m.question || '').toLowerCase();
-        return q.includes('highest temperature in') || q.includes('lowest temperature in');
-      });
+  const q = (m.question || '').toLowerCase();
+
+  return (
+    q.includes('temperature') ||
+    q.includes('temp') ||
+    q.includes('high') ||
+    q.includes('low')
+  );
+});
 
       setMarkets(weatherMarkets);
       setLastUpdated(new Date());
