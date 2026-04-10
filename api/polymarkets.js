@@ -1,74 +1,53 @@
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Cache-Control', 's-maxage=120, stale-while-revalidate=60');
+  res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate=30');
 
   const headers = { 'Accept': 'application/json', 'User-Agent': 'Mozilla/5.0' };
 
   try {
-    // ── Use the official weather tag_id=100381 from Polymarket docs ──────────
-    // Fetch from /events (not /markets) — events contain nested markets array
-    // and have better tag filtering support.
-    // Sort by volume_24hr so the most active temperature markets come first.
-    const urls = [
-      'https://gamma-api.polymarket.com/events?tag_id=100381&active=true&closed=false&limit=100&order=volume_24hr&ascending=false',
-      // Also try the broader climate tag in case weather is nested under it
-      'https://gamma-api.polymarket.com/events?tag_id=100380&active=true&closed=false&limit=50&order=volume_24hr&ascending=false',
-    ];
+    // Query /markets directly — simpler and more reliable than /events
+    // tag_id=100381 is the official Polymarket weather tag from their docs
+    // Also search by question title as a second pass
+    const fetches = await Promise.allSettled([
+      fetch('https://gamma-api.polymarket.com/markets?tag_id=100381&active=true&closed=false&limit=100&order=volume_24hr&ascending=false', { headers }).then(r => r.ok ? r.json() : []),
+      fetch('https://gamma-api.polymarket.com/markets?tag_id=100380&active=true&closed=false&limit=100&order=volume_24hr&ascending=false', { headers }).then(r => r.ok ? r.json() : []),
+    ]);
 
-    const results = await Promise.allSettled(
-      urls.map(url => fetch(url, { headers }).then(r => r.ok ? r.json() : []))
-    );
-
-    // Flatten: each event has a .markets array — pull those out
     const seen = new Set();
-    const markets = [];
+    const all = [];
 
-    for (const result of results) {
+    for (const result of fetches) {
       if (result.status !== 'fulfilled') continue;
-      const events = Array.isArray(result.value) ? result.value : [];
+      const items = Array.isArray(result.value)
+        ? result.value
+        : (result.value?.markets || []);
 
-      for (const event of events) {
-        const eventMarkets = Array.isArray(event.markets) ? event.markets : [];
+      for (const m of items) {
+        const id = m.id || m.conditionId || m.question;
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
 
-        for (const m of eventMarkets) {
-          const id = m.id || m.conditionId || m.question;
-          if (!id || seen.has(id)) continue;
-          seen.add(id);
+        // Build correct event URL from the market's events array or slug
+        const eventSlug = m.events?.[0]?.slug || m.slug || null;
+        const polyUrl = eventSlug
+          ? `https://polymarket.com/event/${eventSlug}`
+          : null;
 
-          // Build the correct Polymarket URL using the EVENT slug, not market slug
-          // URL format: polymarket.com/event/{event-slug}
-          const polyUrl = event.slug
-            ? `https://polymarket.com/event/${event.slug}`
-            : null;
-
-          markets.push({
-            ...m,
-            // Override slug with event slug for correct URL linking
-            eventSlug:  event.slug,
-            polyUrl,
-            question:   m.question || event.title || '',
-            endDate:    m.endDate  || event.endDate || '',
-            volume:     m.volume   || event.volume  || '0',
-            volumeNum:  parseFloat(m.volume || event.volume || 0),
-            // outcomes and outcomePrices come from the market object
-            outcomes:      m.outcomes,
-            outcomePrices: m.outcomePrices,
-          });
-        }
+        all.push({ ...m, eventSlug, polyUrl, volumeNum: parseFloat(m.volume || 0) });
       }
     }
 
-    // Filter strictly to temperature/weather questions only
-    // This removes any non-weather markets that sneak through the tag
-    const weatherMarkets = markets.filter(m => {
+    // Filter to ONLY "Highest temperature in" or "Lowest temperature in" markets
+    // This matches the exact Polymarket title format from their weather category
+    const temp = all.filter(m => {
       const q = (m.question || '').toLowerCase();
-      return /temperature|°f|°c|degrees|rain|rainfall|snow|high temp|low temp|weather|precip|humid|heat|forecast|highest temp|lowest temp/.test(q);
+      return q.includes('highest temperature in') || q.includes('lowest temperature in');
     });
 
-    // Fall back to all tag results if filter is too aggressive
-    const final = weatherMarkets.length > 0 ? weatherMarkets : markets;
+    // If that returns nothing, fall back to any weather-tagged market
+    const final = temp.length > 0 ? temp : all;
 
-    console.log(`tag_id=100381 returned ${markets.length} markets, ${weatherMarkets.length} after weather filter`);
+    console.log(`total: ${all.length}, temperature markets: ${temp.length}, returning: ${final.length}`);
     return res.status(200).json(final);
 
   } catch (err) {

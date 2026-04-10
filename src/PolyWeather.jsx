@@ -574,17 +574,14 @@ export default function PolyWeather() {
         </div>
       )}
 
-      {/* No markets — show forecast-only mode */}
+      {/* No markets */}
       {!loading && markets.length === 0 && (
         <div style={{ background:'rgba(245,158,11,0.07)', border:'1px solid rgba(245,158,11,0.2)', borderRadius:'12px', padding:'14px', marginBottom:'14px' }}>
           <div style={{ color:'#f59e0b', fontWeight:'700', fontSize:'0.72rem', fontFamily:"'Courier New',monospace", marginBottom:'6px' }}>
-            ⚠ POLYMARKET API — CORS RESTRICTED
+            NO ACTIVE TEMPERATURE MARKETS
           </div>
           <div style={{ color:'#94a3b8', fontSize:'0.68rem', lineHeight:1.6 }}>
-            Polymarket's API blocks direct browser requests (CORS). The weather forecast data below is live from Open-Meteo. To get live market prices you need a backend proxy.
-          </div>
-          <div style={{ marginTop:'10px', color:'#64748b', fontSize:'0.62rem', fontFamily:"'Courier New',monospace" }}>
-            → Next step: add a Vercel serverless function at /api/polymarkets.js to proxy Gamma API calls
+            Polymarket has no active "Highest temperature in" markets right now, or the API returned 0 results. Check back soon — new daily markets open each morning.
           </div>
         </div>
       )}
