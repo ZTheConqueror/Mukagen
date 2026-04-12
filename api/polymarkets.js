@@ -31,22 +31,15 @@ export default async function handler(req, res) {
 
     console.log(`Total markets fetched: ${all.length}`);
 
-    // Single broad regex — any one match is enough, no AND chains
-    const WEATHER_RE = /weather|temperature|\btemp\b|rainfall|\brain\b|snowfall|\bsnow\b|°[fc]|\bdegree|\bprecip|hurricane|tornado|flood|drought|\bwind\b|humid|sunshine|forecast|high of|low of|hottest|coldest|heat wave|freeze|frost/i;
-
+    // TEST FILTER — only "weather" or "temperature" in the question
     const weatherMarkets = all.filter(m => {
-      const q = m.question || m.title || '';
-      if (WEATHER_RE.test(q)) return true;
-      const tags = (m.tags || []).map(t => (t.slug || t.name || '').toLowerCase());
-      if (tags.some(t => t.includes('weather') || t.includes('climate') || t.includes('temperature'))) return true;
-      const cat = (m.category || '').toLowerCase();
-      if (cat.includes('weather') || cat.includes('climate')) return true;
-      return false;
+      const q = (m.question || m.title || '').toLowerCase();
+      return q.includes('weather') || q.includes('temperature');
     });
 
-    console.log(`Weather markets: ${weatherMarkets.length}, returning: ${weatherMarkets.length > 0 ? weatherMarkets.length : all.length}`);
+    console.log(`Weather markets: ${weatherMarkets.length}`);
 
-    // If zero weather markets, return all so client can see what's actually there
+    // Return weather matches, or all markets if nothing matched (so debug panel shows samples)
     return res.status(200).json(weatherMarkets.length > 0 ? weatherMarkets : all);
 
   } catch (err) {
