@@ -234,17 +234,10 @@ export default function PolyWeather() {
     try {
       const rawMarkets = await fetchPolyWeatherMarkets();
 
-      // ── CLIENT-SIDE WEATHER FILTER ─────────────────────────────────────────
-      // Keep this in sync with server filter but do it client-side too so
-      // we can show debug info when nothing matches
-      const WEATHER_RE = /weather|temperature|\btemp\b|rainfall|\brain\b|snowfall|\bsnow\b|°[fc]|\bdegree|\bprecip|hurricane|tornado|flood|drought|\bwind\b|humid|sunshine|forecast|high of|low of|hottest|coldest|heat wave|freeze|frost/i;
-
+      // TEST FILTER — only "weather" or "temperature" in the question
       const weatherMarkets = rawMarkets.filter(m => {
-        const q = m.question || m.title || '';
-        if (WEATHER_RE.test(q)) return true;
-        const tags = (m.tags || []).map(t => (t.slug || t.name || '').toLowerCase());
-        if (tags.some(t => t.includes('weather') || t.includes('climate') || t.includes('temperature'))) return true;
-        return false;
+        const q = (m.question || m.title || "").toLowerCase();
+        return q.includes("weather") || q.includes("temperature");
       });
 
       console.log(`[PolyWeather] raw: ${rawMarkets.length}, weather: ${weatherMarkets.length}`);
