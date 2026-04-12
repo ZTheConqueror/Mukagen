@@ -5,16 +5,10 @@ export default async function handler(req, res) {
   const headers = { 'Accept': 'application/json', 'User-Agent': 'Mozilla/5.0' };
 
   try {
-    // Query /markets directly — simpler and more reliable than /events
-    // tag_id=100381 is the official Polymarket weather tag from their docs
-    // Also search by question title as a second pass
     const fetches = await Promise.allSettled([
-  // ❗ REMOVED tag_id + ❗ CHANGED limit + ❗ KEPT volume sort
-  fetch('https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=200&order=volume_24hr&ascending=false', { headers }).then(r => r.ok ? r.json() : []),
-
-  // ❗ REMOVED tag_id + ❗ CHANGED limit + ❗ CHANGED order field
-  fetch('https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=200&order=created_at&ascending=false', { headers }).then(r => r.ok ? r.json() : []),
-]);
+      fetch('https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=200&order=volume_24hr&ascending=false', { headers }).then(r => r.ok ? r.json() : []),
+      fetch('https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=200&order=created_at&ascending=false', { headers }).then(r => r.ok ? r.json() : []),
+    ]);
 
     const seen = new Set();
     const all = [];
@@ -29,48 +23,31 @@ export default async function handler(req, res) {
         const id = m.id || m.conditionId || m.question;
         if (!id || seen.has(id)) continue;
         seen.add(id);
-
-        // Build correct event URL from the market's events array or slug
         const eventSlug = m.events?.[0]?.slug || m.slug || null;
-        const polyUrl = eventSlug
-          ? `https://polymarket.com/event/${eventSlug}`
-          : null;
-
+        const polyUrl = eventSlug ? `https://polymarket.com/event/${eventSlug}` : null;
         all.push({ ...m, eventSlug, polyUrl, volumeNum: parseFloat(m.volume || 0) });
       }
     }
 
-    // Filter to ONLY "Highest temperature in" or "Lowest temperature in" markets
-    // This matches the exact Polymarket title format from their weather category
-    const temp = all.filter(m => {
-  const q = (m.question || '').toLowerCase();
+    console.log(`Total markets fetched: ${all.length}`);
 
-  // Check tags for WEATHER category
-  const tags = (m.tags || []).map(t => (t.slug || t.name || '').toLowerCase());
+    // Single broad regex — any one match is enough, no AND chains
+    const WEATHER_RE = /weather|temperature|\btemp\b|rainfall|\brain\b|snowfall|\bsnow\b|°[fc]|\bdegree|\bprecip|hurricane|tornado|flood|drought|\bwind\b|humid|sunshine|forecast|high of|low of|hottest|coldest|heat wave|freeze|frost/i;
 
-  const isWeatherTag =
-    tags.includes('weather') ||
-    tags.some(t => t.includes('weather'));
+    const weatherMarkets = all.filter(m => {
+      const q = m.question || m.title || '';
+      if (WEATHER_RE.test(q)) return true;
+      const tags = (m.tags || []).map(t => (t.slug || t.name || '').toLowerCase());
+      if (tags.some(t => t.includes('weather') || t.includes('climate') || t.includes('temperature'))) return true;
+      const cat = (m.category || '').toLowerCase();
+      if (cat.includes('weather') || cat.includes('climate')) return true;
+      return false;
+    });
 
-  // Check it's a temperature-type market
-  const isTemp =
-    q.includes('temperature') ||
-    q.includes('temp');
+    console.log(`Weather markets: ${weatherMarkets.length}, returning: ${weatherMarkets.length > 0 ? weatherMarkets.length : all.length}`);
 
-  // Specifically target "highest temperature" style markets
-  const isHighTemp =
-    q.includes('highest temperature') ||
-    q.includes('high temperature') ||
-    q.includes('max temperature');
-
-  return isWeatherTag && isTemp && isHighTemp;
-});
-
-    // If that returns nothing, fall back to any weather-tagged market
-    const final = temp.length > 0 ? temp : all;
-
-    console.log(`total: ${all.length}, temperature markets: ${temp.length}, returning: ${final.length}`);
-    return res.status(200).json(final);
+    // If zero weather markets, return all so client can see what's actually there
+    return res.status(200).json(weatherMarkets.length > 0 ? weatherMarkets : all);
 
   } catch (err) {
     console.error('Polymarket proxy error:', err);
