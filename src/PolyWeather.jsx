@@ -235,8 +235,11 @@ export default function PolyWeather() {
     try {
       const rawMarkets = await fetchPolyWeatherMarkets();
 
-      // Server already searched by keyword — trust it, no client filter needed
-      const weatherMarkets = rawMarkets;
+      // Filter to only actual weather markets using the normalized question field
+      const weatherMarkets = rawMarkets.filter(m => {
+        const q = (m.question || m.title || m.name || '').toLowerCase();
+        return q.includes('weather') || q.includes('temperature');
+      });
 
       console.log(`[PolyWeather] raw: ${rawMarkets.length}, weather: ${weatherMarkets.length}`);
 
