@@ -127,7 +127,8 @@ function computeSignal(market, forecast, parsed, city) {
 
 // ── SIGNAL CARD ───────────────────────────────────────────────────────────────
 function SignalCard({ market, forecast, city }) {
-  const parsed = useMemo(() => parseWeatherQuestion(market.question || ''), [market.question]);
+  const question = market.question || market.title || market.name || '';
+  const parsed = useMemo(() => parseWeatherQuestion(question), [question]);
   const signal = useMemo(() => computeSignal(market, forecast, parsed, city), [market, forecast, parsed, city]);
   const signalColors = { BUY_YES:'#4ade80', BUY_NO:'#f87171', HOLD:'#64748b', INSUFFICIENT_DATA:'#475569', NO_PRICE:'#475569', NO_FORECAST:'#475569', UNRESOLVABLE:'#475569' };
   const signalLabels = { BUY_YES:'▲ BUY YES', BUY_NO:'▼ BUY NO', HOLD:'— HOLD', INSUFFICIENT_DATA:'? NO DATA', NO_PRICE:'? NO PRICE', NO_FORECAST:'? NO FCST', UNRESOLVABLE:'~ N/A' };
@@ -144,7 +145,7 @@ function SignalCard({ market, forecast, city }) {
             <div style={{ padding:'3px 10px', borderRadius:'20px', fontSize:'0.65rem', fontFamily:"'Courier New',monospace", fontWeight:'700', letterSpacing:'0.08em', background:`${sigColor}20`, color:sigColor, border:`1px solid ${sigColor}40` }}>{sigLabel}</div>
             {city && <div style={{ padding:'2px 8px', borderRadius:'20px', fontSize:'0.58rem', fontFamily:"'Courier New',monospace", background:'rgba(56,189,248,0.1)', color:'#38bdf8', border:'1px solid rgba(56,189,248,0.2)' }}>📍 {city.name}</div>}
           </div>
-          <div style={{ color:'#e2e8f0', fontSize:'0.78rem', lineHeight:1.45, fontWeight: isBuy ? '600' : '400' }}>{market.question}</div>
+          <div style={{ color:'#e2e8f0', fontSize:'0.78rem', lineHeight:1.45, fontWeight: isBuy ? '600' : '400' }}>{market.question || market.title || market.name || '(no title)'}</div>
         </div>
       </div>
       {signal.marketProb !== null && signal.ourProb !== null && (
@@ -274,11 +275,13 @@ export default function PolyWeather() {
 
   const enrichedMarkets = useMemo(() => {
     return markets.map(m => {
-      const city = extractCity(m.question || '');
+      // Normalize: Gamma uses question, title, name, or groupItemTitle depending on endpoint
+      const question = m.question || m.title || m.name || m.groupItemTitle || m._eventTitle || '';
+      const city = extractCity(question);
       const forecast = city ? forecasts[city.name] : null;
-      const parsed = parseWeatherQuestion(m.question || '');
-      const sig = computeSignal(m, forecast, parsed, city);
-      return { ...m, city, forecast, parsed, sig };
+      const parsed = parseWeatherQuestion(question);
+      const sig = computeSignal({ ...m, question }, forecast, parsed, city);
+      return { ...m, question, city, forecast, parsed, sig };
     });
   }, [markets, forecasts]);
 

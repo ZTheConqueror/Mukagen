@@ -6,24 +6,15 @@ export default async function handler(req, res) {
   const BASE = 'https://gamma-api.polymarket.com';
 
   try {
-    // Try every known way Gamma exposes the Weather category
-    // Polymarket's nav shows "Weather" as a real category — these are the possible API forms
     const searches = [
-      // Tag slug approaches
       `${BASE}/markets?active=true&closed=false&limit=100&tag_slug=weather`,
       `${BASE}/markets?active=true&closed=false&limit=100&tags=weather`,
       `${BASE}/markets?active=true&closed=false&limit=100&category=weather`,
-      // Known numeric tag IDs for weather on Polymarket (100381 was in old docs)
       `${BASE}/markets?active=true&closed=false&limit=100&tag_id=100381`,
-      `${BASE}/markets?active=true&closed=false&limit=100&tagId=100381`,
-      // Keyword searches
       `${BASE}/markets?active=true&closed=false&limit=100&question=temperature`,
       `${BASE}/markets?active=true&closed=false&limit=100&question=weather`,
-      `${BASE}/markets?active=true&closed=false&limit=100&question=rainfall`,
-      `${BASE}/markets?active=true&closed=false&limit=100&question=precipitation`,
       `${BASE}/markets?active=true&closed=false&limit=100&question=highest+temperature`,
       `${BASE}/markets?active=true&closed=false&limit=100&question=lowest+temperature`,
-      // Events endpoint with weather tag
       `${BASE}/events?active=true&closed=false&limit=100&tag_slug=weather`,
       `${BASE}/events?active=true&closed=false&limit=100&category=weather`,
     ];
@@ -31,11 +22,8 @@ export default async function handler(req, res) {
     const fetches = await Promise.allSettled(
       searches.map(url =>
         fetch(url, { headers })
-          .then(r => {
-            console.log(`${url} → ${r.status}`);
-            return r.ok ? r.json() : [];
-          })
-          .catch(e => { console.log(`${url} → ERROR: ${e.message}`); return []; })
+          .then(r => { console.log(`${url.replace(BASE,'')} → ${r.status}`); return r.ok ? r.json() : []; })
+          .catch(e => { console.log(`ERROR: ${e.message}`); return []; })
       )
     );
 
@@ -46,34 +34,53 @@ export default async function handler(req, res) {
       if (result.status !== 'fulfilled') continue;
       const value = result.value;
 
-      // Handle both /markets and /events response shapes
       let items = [];
       if (Array.isArray(value)) {
         items = value;
       } else if (value?.markets) {
         items = value.markets;
       } else if (value?.events) {
-        // Events contain nested markets
         for (const ev of value.events) {
-          items.push(...(ev.markets || []));
+          // Flatten event markets, inheriting event title if market has no question
+          const evTitle = ev.title || ev.name || '';
+          for (const m of (ev.markets || [])) {
+            items.push({ ...m, _eventTitle: evTitle });
+          }
         }
       }
 
       for (const m of items) {
-        const id = m.id || m.conditionId || m.question;
+        const id = m.id || m.conditionId;
         if (!id || seen.has(id)) continue;
         seen.add(id);
+
+        // ── NORMALIZE question field ──────────────────────────────────────
+        // Gamma uses different field names depending on endpoint:
+        // /markets  → m.question  OR  m.title  OR  m.name
+        // /events   → nested markets may have no question, use event title
+        const question =
+          m.question ||
+          m.title ||
+          m.name ||
+          m.groupItemTitle ||
+          m._eventTitle ||
+          '';
+
         const eventSlug = m.events?.[0]?.slug || m.slug || null;
         const polyUrl = eventSlug ? `https://polymarket.com/event/${eventSlug}` : null;
-        all.push({ ...m, eventSlug, polyUrl, volumeNum: parseFloat(m.volume || 0) });
+
+        // Log first few so we can see field names in Vercel logs
+        if (all.length < 5) {
+          console.log(`MARKET FIELDS: ${JSON.stringify(Object.keys(m))}`);
+          console.log(`  question="${m.question}" title="${m.title}" name="${m.name}" groupItemTitle="${m.groupItemTitle}"`);
+          console.log(`  → normalized: "${question}"`);
+        }
+
+        all.push({ ...m, question, eventSlug, polyUrl, volumeNum: parseFloat(m.volume || 0) });
       }
     }
 
-    console.log(`Total unique weather markets found: ${all.length}`);
-
-    // Log first 5 questions so we can see what's coming back
-    all.slice(0, 5).forEach((m, i) => console.log(`  [${i}] ${m.question}`));
-
+    console.log(`Total unique weather markets: ${all.length}`);
     return res.status(200).json(all);
 
   } catch (err) {
