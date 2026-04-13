@@ -234,11 +234,8 @@ export default function PolyWeather() {
     try {
       const rawMarkets = await fetchPolyWeatherMarkets();
 
-      // TEST FILTER — only "weather" or "temperature" in the question
-      const weatherMarkets = rawMarkets.filter(m => {
-        const q = (m.question || m.title || "").toLowerCase();
-        return q.includes("weather") || q.includes("temperature");
-      });
+      // Server already searched by keyword — trust it, no client filter needed
+      const weatherMarkets = rawMarkets;
 
       console.log(`[PolyWeather] raw: ${rawMarkets.length}, weather: ${weatherMarkets.length}`);
 
