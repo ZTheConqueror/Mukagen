@@ -80,106 +80,219 @@ async function fetchPolyWeatherMarkets() {
   }
 }
 
-function computeSignal(market, forecast, parsed, city) {
-  if (!forecast || !parsed || parsed.type === 'unknown') {
-    return { marketProb: null, ourProb: null, edge: null, signal: 'INSUFFICIENT_DATA' };
+// ── OUTCOME PARSING ──────────────────────────────────────────────────────────
+// Polymarket temperature markets have buckets like:
+//   "Below 15°C" | "15-17°C" | "17-19°C" | "Above 19°C"
+// Each outcome has a price (0-1) = market's implied probability for that bucket.
+// We parse bucket bounds and compare against forecast to find mispriced buckets.
+
+function parseTempBucket(name) {
+  const n = (name || '').toLowerCase().trim();
+  const isC = n.includes('°c') || n.includes('c)') || n.includes(' c');
+
+  // "below X" or "under X" or "< X"
+  const belowM = n.match(/(?:below|under|<)\s*([\d.]+)/);
+  if (belowM) return { lo: -Infinity, hi: parseFloat(belowM[1]), unit: isC ? 'C' : 'F' };
+
+  // "above X" or "over X" or "> X"
+  const aboveM = n.match(/(?:above|over|>)\s*([\d.]+)/);
+  if (aboveM) return { lo: parseFloat(aboveM[1]), hi: Infinity, unit: isC ? 'C' : 'F' };
+
+  // "X-Y" or "X to Y" or "between X and Y"
+  const rangeM = n.match(/([\d.]+)\s*(?:-|to|–)\s*([\d.]+)/);
+  if (rangeM) return { lo: parseFloat(rangeM[1]), hi: parseFloat(rangeM[2]), unit: isC ? 'C' : 'F' };
+
+  // Single value "exactly X"
+  const singleM = n.match(/([\d.]+)/);
+  if (singleM) {
+    const v = parseFloat(singleM[1]);
+    return { lo: v - 0.5, hi: v + 0.5, unit: isC ? 'C' : 'F' };
   }
-  const outcomes = market.outcomes || [];
-  const yesOutcome = outcomes.find(o => o.name?.toLowerCase() === 'yes') || outcomes[0];
-  const marketProb = yesOutcome ? parseFloat(yesOutcome.price) : null;
-  if (marketProb === null || isNaN(marketProb)) return { marketProb: null, ourProb: null, edge: null, signal: 'NO_PRICE' };
-  const daily = forecast.daily;
-  if (!daily) return { marketProb, ourProb: null, edge: null, signal: 'NO_FORECAST' };
-  let ourProb = null;
-  if (parsed.type === 'temp_high' && parsed.threshold !== null) {
-    const maxTemps = daily.temperature_2m_max || [];
-    if (!maxTemps.length) return { marketProb, ourProb: null, edge: null, signal: 'NO_FORECAST' };
-    const targetTemp = maxTemps[0];
-    const threshold = parsed.unit === 'C' ? celsiusToF(parsed.threshold) : parsed.threshold;
-    const z = (targetTemp - threshold) / 3.5;
-    ourProb = 1 / (1 + Math.exp(-1.7 * z));
-  } else if (parsed.type === 'temp_low' && parsed.threshold !== null) {
-    const minTemps = daily.temperature_2m_min || [];
-    if (!minTemps.length) return { marketProb, ourProb: null, edge: null, signal: 'NO_FORECAST' };
-    const targetTemp = minTemps[0];
-    const threshold = parsed.unit === 'C' ? celsiusToF(parsed.threshold) : parsed.threshold;
-    const z = (targetTemp - threshold) / 3.0;
-    ourProb = 1 / (1 + Math.exp(-1.7 * z));
-  } else if (parsed.type === 'rain' && parsed.rainThreshold !== null) {
-    const precips = daily.precipitation_sum || [];
-    const probMax = daily.precipitation_probability_max || [];
-    if (!precips.length) return { marketProb, ourProb: null, edge: null, signal: 'NO_FORECAST' };
-    const expectedPrecip = precips[0];
-    const precipProb = (probMax[0] || 50) / 100;
-    if (expectedPrecip > 0 && precipProb > 0.3) {
-      const lambda = 1 / Math.max(expectedPrecip, 0.01);
-      ourProb = precipProb * Math.exp(-lambda * parsed.rainThreshold) + (1 - precipProb) * 0.02;
-    } else { ourProb = 0.05; }
-  } else if (parsed.type === 'snow') {
-    const snowVal = (daily.snowfall_sum || [])[0] || 0;
-    ourProb = snowVal > 0.5 ? 0.75 : snowVal > 0.1 ? 0.45 : 0.08;
-  }
-  if (ourProb === null) return { marketProb, ourProb: null, edge: null, signal: 'UNRESOLVABLE' };
-  const edge = ourProb - marketProb;
-  const signal = edge > 0.12 ? 'BUY_YES' : edge < -0.12 ? 'BUY_NO' : 'HOLD';
-  return { marketProb, ourProb, edge, signal, confidence: Math.min(1, Math.abs(edge) * 4) };
+
+  return null;
+}
+
+// Normal CDF approximation — probability that forecast temp (with uncertainty) falls in [lo, hi]
+function bucketProb(forecastTemp, lo, hi, sigma = 2.5) {
+  const logistic = z => 1 / (1 + Math.exp(-1.7 * z));
+  const pBelow  = lo === -Infinity ? 0 : logistic((forecastTemp - lo) / sigma);
+  const pAbove  = hi === Infinity  ? 0 : 1 - logistic((forecastTemp - hi) / sigma);
+  return Math.max(0, Math.min(1, 1 - pBelow - pAbove));
+}
+
+// ── MAIN SIGNAL LOGIC ─────────────────────────────────────────────────────────
+function computeBucketSignals(market, forecast) {
+  if (!forecast?.daily) return null;
+
+  const rawOutcomes = market.outcomes || [];
+  if (!rawOutcomes.length) return null;
+
+  const question = (market.question || '').toLowerCase();
+  const isHighTemp = /highest|maximum|high temp/.test(question);
+  const isLowTemp  = /lowest|minimum|low temp/.test(question);
+
+  // Pick the right forecast value
+  const forecastTempC = isLowTemp
+    ? forecast.daily.temperature_2m_min?.[0]
+    : forecast.daily.temperature_2m_max?.[0]; // default to high
+
+  if (forecastTempC == null) return null;
+
+  // Parse each outcome bucket
+  const outcomes = rawOutcomes.map(o => {
+    const name = o.name || o.title || o.value || '';
+    const price = parseFloat(o.price ?? o.probability ?? 0);
+    const bucket = parseTempBucket(name);
+
+    if (!bucket) return { name, price, ourProb: null, edge: null };
+
+    // Convert forecast to bucket's unit
+    const forecastTemp = bucket.unit === 'C'
+      ? forecastTempC
+      : forecastTempC * 9/5 + 32;
+
+    // Convert bucket bounds if needed (already in bucket.unit)
+    const ourProb = bucketProb(forecastTemp, bucket.lo, bucket.hi);
+    const edge = ourProb - price;
+
+    return { name, price, ourProb, edge, bucket, forecastTemp };
+  });
+
+  // Best buy signal = largest positive edge (market underpricing this bucket)
+  const withEdge = outcomes.filter(o => o.edge !== null);
+  const bestBuy  = withEdge.reduce((best, o) => (!best || o.edge > best.edge) ? o : best, null);
+  const bestSell = withEdge.reduce((best, o) => (!best || o.edge < best.edge) ? o : best, null);
+
+  return { outcomes, bestBuy, bestSell, forecastTempC };
 }
 
 // ── SIGNAL CARD ───────────────────────────────────────────────────────────────
 function SignalCard({ market, forecast, city }) {
   const question = market.question || market.title || market.name || '';
-  const parsed = useMemo(() => parseWeatherQuestion(question), [question]);
-  const signal = useMemo(() => computeSignal(market, forecast, parsed, city), [market, forecast, parsed, city]);
-  const signalColors = { BUY_YES:'#4ade80', BUY_NO:'#f87171', HOLD:'#64748b', INSUFFICIENT_DATA:'#475569', NO_PRICE:'#475569', NO_FORECAST:'#475569', UNRESOLVABLE:'#475569' };
-  const signalLabels = { BUY_YES:'▲ BUY YES', BUY_NO:'▼ BUY NO', HOLD:'— HOLD', INSUFFICIENT_DATA:'? NO DATA', NO_PRICE:'? NO PRICE', NO_FORECAST:'? NO FCST', UNRESOLVABLE:'~ N/A' };
-  const sigColor = signalColors[signal.signal] || '#475569';
-  const sigLabel = signalLabels[signal.signal] || signal.signal;
-  const isBuy = signal.signal === 'BUY_YES' || signal.signal === 'BUY_NO';
-  const endDate = market.endDate ? new Date(market.endDate).toLocaleDateString('en-US', { month:'short', day:'numeric' }) : '—';
+  const endDate  = market.endDate
+    ? new Date(market.endDate).toLocaleDateString('en-US', { month:'short', day:'numeric' })
+    : '—';
   const volume = market.volumeNum ? `$${(market.volumeNum/1000).toFixed(0)}k` : '—';
+
+  const bucketData = useMemo(() => computeBucketSignals(market, forecast), [market, forecast]);
+
+  // Top signal for the card header badge
+  const topEdge    = bucketData?.bestBuy?.edge ?? null;
+  const topSignal  = topEdge === null ? 'NO_DATA'
+    : topEdge > 0.12  ? 'BUY'
+    : topEdge < -0.12 ? 'SELL'
+    : 'HOLD';
+
+  const sigColor = topSignal === 'BUY' ? '#4ade80' : topSignal === 'SELL' ? '#f87171' : '#64748b';
+  const sigLabel = topSignal === 'BUY'  ? `▲ BUY "${bucketData.bestBuy.name}"`
+                 : topSignal === 'SELL' ? `▼ SELL "${bucketData.bestSell?.name}"`
+                 : topSignal === 'HOLD' ? '— HOLD' : '? NO DATA';
+  const isBuy = topSignal === 'BUY' || topSignal === 'SELL';
+
+  const forecastDisplay = bucketData?.forecastTempC != null
+    ? `${bucketData.forecastTempC.toFixed(1)}°C / ${(bucketData.forecastTempC * 9/5 + 32).toFixed(1)}°F`
+    : null;
+
   return (
     <div style={{ background: isBuy ? `${sigColor}0d` : 'rgba(255,255,255,0.02)', borderRadius:'14px', border: isBuy ? `1.5px solid ${sigColor}40` : '1px solid rgba(255,255,255,0.06)', padding:'14px', marginBottom:'10px' }}>
-      <div style={{ display:'flex', alignItems:'flex-start', gap:'10px', marginBottom:'10px' }}>
-        <div style={{ flex:1, minWidth:0 }}>
-          <div style={{ display:'flex', alignItems:'center', gap:'8px', marginBottom:'4px', flexWrap:'wrap' }}>
-            <div style={{ padding:'3px 10px', borderRadius:'20px', fontSize:'0.65rem', fontFamily:"'Courier New',monospace", fontWeight:'700', letterSpacing:'0.08em', background:`${sigColor}20`, color:sigColor, border:`1px solid ${sigColor}40` }}>{sigLabel}</div>
-            {city && <div style={{ padding:'2px 8px', borderRadius:'20px', fontSize:'0.58rem', fontFamily:"'Courier New',monospace", background:'rgba(56,189,248,0.1)', color:'#38bdf8', border:'1px solid rgba(56,189,248,0.2)' }}>📍 {city.name}</div>}
+
+      {/* Header: title + city + signal badge */}
+      <div style={{ marginBottom:'10px' }}>
+        <div style={{ display:'flex', alignItems:'center', gap:'8px', marginBottom:'6px', flexWrap:'wrap' }}>
+          <div style={{ padding:'3px 10px', borderRadius:'20px', fontSize:'0.65rem', fontFamily:"'Courier New',monospace", fontWeight:'700', letterSpacing:'0.08em', background:`${sigColor}20`, color:sigColor, border:`1px solid ${sigColor}40`, flexShrink:0 }}>
+            {sigLabel}
           </div>
-          <div style={{ color:'#e2e8f0', fontSize:'0.78rem', lineHeight:1.45, fontWeight: isBuy ? '600' : '400' }}>{market.question || market.title || market.name || '(no title)'}</div>
-        </div>
-      </div>
-      {signal.marketProb !== null && signal.ourProb !== null && (
-        <div style={{ marginBottom:'10px' }}>
-          <div style={{ display:'flex', gap:'8px', marginBottom:'6px' }}>
-            {[['MARKET ODDS', (signal.marketProb*100).toFixed(0)+'%', '#e2e8f0'], ['NOAA MODEL', (signal.ourProb*100).toFixed(0)+'%', sigColor], ['EDGE', (signal.edge>0?'+':'')+(signal.edge*100).toFixed(0)+'%', sigColor]].map(([label, val, color]) => (
-              <div key={label} style={{ flex:1, background:'rgba(255,255,255,0.04)', borderRadius:'8px', padding:'8px 10px' }}>
-                <div style={{ color:'#64748b', fontSize:'0.55rem', fontFamily:"'Courier New',monospace", letterSpacing:'0.1em', marginBottom:'3px' }}>{label}</div>
-                <div style={{ color, fontWeight:'700', fontSize:'1.1rem', fontFamily:"'Courier New',monospace" }}>{val}</div>
-              </div>
-            ))}
-          </div>
-          <div style={{ position:'relative', height:'5px', background:'rgba(255,255,255,0.06)', borderRadius:'3px', overflow:'hidden' }}>
-            <div style={{ position:'absolute', left: signal.edge >= 0 ? '50%' : `${((signal.edge+1)/2)*100}%`, width:`${Math.abs(signal.edge)*50}%`, height:'100%', background:sigColor, borderRadius:'3px' }}/>
-            <div style={{ position:'absolute', left:'50%', top:0, width:'1px', height:'100%', background:'rgba(255,255,255,0.2)' }}/>
-          </div>
-          {isBuy && (
-            <div style={{ marginTop:'6px', display:'flex', alignItems:'center', gap:'6px' }}>
-              <span style={{ color:'#475569', fontSize:'0.58rem', fontFamily:"'Courier New',monospace" }}>CONFIDENCE</span>
-              <div style={{ flex:1, height:'3px', background:'rgba(255,255,255,0.06)', borderRadius:'2px' }}>
-                <div style={{ height:'100%', width:`${signal.confidence*100}%`, background:sigColor, borderRadius:'2px' }}/>
-              </div>
-              <span style={{ color:sigColor, fontSize:'0.58rem', fontFamily:"'Courier New',monospace" }}>{(signal.confidence*100).toFixed(0)}%</span>
+          {city && (
+            <div style={{ padding:'2px 8px', borderRadius:'20px', fontSize:'0.58rem', fontFamily:"'Courier New',monospace", background:'rgba(56,189,248,0.1)', color:'#38bdf8', border:'1px solid rgba(56,189,248,0.2)' }}>
+              📍 {city.name}
             </div>
           )}
         </div>
+        <div style={{ color:'#e2e8f0', fontSize:'0.82rem', fontWeight:'600', lineHeight:1.4 }}>{question}</div>
+        {forecastDisplay && (
+          <div style={{ marginTop:'4px', color:'#38bdf8', fontSize:'0.65rem', fontFamily:"'Courier New',monospace" }}>
+            📡 Forecast: {forecastDisplay}
+          </div>
+        )}
+      </div>
+
+      {/* Bucket breakdown — the core of the card */}
+      {bucketData?.outcomes?.length > 0 && (
+        <div style={{ marginBottom:'10px' }}>
+          <div style={{ color:'#475569', fontSize:'0.58rem', fontFamily:"'Courier New',monospace", letterSpacing:'0.1em', marginBottom:'6px' }}>
+            OUTCOME BUCKETS — MARKET PRICE vs FORECAST MODEL
+          </div>
+          <div style={{ display:'flex', flexDirection:'column', gap:'6px' }}>
+            {bucketData.outcomes.map((o, i) => {
+              const edge = o.edge;
+              const hasData = edge !== null;
+              const edgeColor = !hasData ? '#475569' : edge > 0.12 ? '#4ade80' : edge < -0.12 ? '#f87171' : '#94a3b8';
+              const isTopBuy = bucketData.bestBuy?.name === o.name && edge > 0.12;
+              return (
+                <div key={i} style={{
+                  background: isTopBuy ? 'rgba(74,222,128,0.06)' : 'rgba(255,255,255,0.03)',
+                  borderRadius:'8px',
+                  border: isTopBuy ? '1px solid rgba(74,222,128,0.25)' : '1px solid rgba(255,255,255,0.05)',
+                  padding:'8px 10px',
+                }}>
+                  {/* Bucket name + edge badge */}
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom: hasData ? '6px' : '0' }}>
+                    <span style={{ color: isTopBuy ? '#4ade80' : '#cbd5e1', fontSize:'0.75rem', fontFamily:"'Courier New',monospace", fontWeight: isTopBuy ? '700' : '400' }}>
+                      {isTopBuy ? '★ ' : ''}{o.name}
+                    </span>
+                    {hasData && (
+                      <span style={{ color: edgeColor, fontSize:'0.65rem', fontFamily:"'Courier New',monospace", fontWeight:'700' }}>
+                        EDGE {edge > 0 ? '+' : ''}{(edge * 100).toFixed(0)}%
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Three columns: market price | our model | bar */}
+                  {hasData && (
+                    <div style={{ display:'flex', gap:'8px', alignItems:'center' }}>
+                      {/* Market price */}
+                      <div style={{ textAlign:'center', minWidth:'52px' }}>
+                        <div style={{ color:'#475569', fontSize:'0.5rem', fontFamily:"'Courier New',monospace", letterSpacing:'0.08em' }}>MARKET</div>
+                        <div style={{ color:'#e2e8f0', fontSize:'0.85rem', fontWeight:'700', fontFamily:"'Courier New',monospace" }}>{(o.price * 100).toFixed(0)}¢</div>
+                      </div>
+                      {/* Model prob */}
+                      <div style={{ textAlign:'center', minWidth:'52px' }}>
+                        <div style={{ color:'#475569', fontSize:'0.5rem', fontFamily:"'Courier New',monospace", letterSpacing:'0.08em' }}>MODEL</div>
+                        <div style={{ color: edgeColor, fontSize:'0.85rem', fontWeight:'700', fontFamily:"'Courier New',monospace" }}>{(o.ourProb * 100).toFixed(0)}¢</div>
+                      </div>
+                      {/* Visual edge bar */}
+                      <div style={{ flex:1, position:'relative', height:'6px', background:'rgba(255,255,255,0.06)', borderRadius:'3px' }}>
+                        <div style={{
+                          position:'absolute',
+                          left: edge >= 0 ? '50%' : `${((edge + 1) / 2) * 100}%`,
+                          width: `${Math.abs(edge) * 50}%`,
+                          height:'100%', background: edgeColor, borderRadius:'3px',
+                        }}/>
+                        <div style={{ position:'absolute', left:'50%', top:0, width:'1px', height:'100%', background:'rgba(255,255,255,0.2)' }}/>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
       )}
-      <div style={{ display:'flex', gap:'12px', flexWrap:'wrap' }}>
-        {[['CLOSES', endDate], ['VOLUME', volume], ['TYPE', parsed.type.replace('_',' ').toUpperCase()]].map(([label, val]) => (
-          <div key={label}><span style={{ color:'#334155', fontSize:'0.58rem', fontFamily:"'Courier New',monospace" }}>{label}: </span><span style={{ color:'#64748b', fontSize:'0.58rem', fontFamily:"'Courier New',monospace" }}>{val}</span></div>
+
+      {/* Footer meta */}
+      <div style={{ display:'flex', gap:'12px', flexWrap:'wrap', marginTop:'8px' }}>
+        {[['CLOSES', endDate], ['VOLUME', volume]].map(([label, val]) => (
+          <div key={label}>
+            <span style={{ color:'#334155', fontSize:'0.58rem', fontFamily:"'Courier New',monospace" }}>{label}: </span>
+            <span style={{ color:'#64748b', fontSize:'0.58rem', fontFamily:"'Courier New',monospace" }}>{val}</span>
+          </div>
         ))}
       </div>
       {market.eventSlug && (
-        <a href={`https://polymarket.com/event/${market.eventSlug}`} target="_blank" rel="noopener noreferrer" style={{ display:'block', marginTop:'8px', color:'#38bdf8', fontSize:'0.6rem', fontFamily:"'Courier New',monospace", letterSpacing:'0.08em', textDecoration:'none' }}>→ VIEW ON POLYMARKET ↗</a>
+        <a href={`https://polymarket.com/event/${market.eventSlug}`} target="_blank" rel="noopener noreferrer"
+          style={{ display:'block', marginTop:'8px', color:'#38bdf8', fontSize:'0.6rem', fontFamily:"'Courier New',monospace", letterSpacing:'0.08em', textDecoration:'none' }}>
+          → VIEW ON POLYMARKET ↗
+        </a>
       )}
     </div>
   );
