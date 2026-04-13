@@ -461,16 +461,40 @@ export default function PolyWeather() {
   useEffect(() => { loadData(); }, [loadData]);
 
   const enrichedMarkets = useMemo(() => {
-    return markets.map(m => {
-      // Normalize: Gamma uses question, title, name, or groupItemTitle depending on endpoint
-      const question = m.question || m.title || m.name || m.groupItemTitle || m._eventTitle || '';
-      const city = extractCity(question);
-      const forecast = city ? forecasts[city.name] : null;
-      const parsed = parseWeatherQuestion(question);
-      const sig = computeSignal({ ...m, question }, forecast, parsed, city);
-      return { ...m, question, city, forecast, parsed, sig };
-    });
-  }, [markets, forecasts]);
+  return markets.map(m => {
+    // Normalize: Gamma uses question, title, name, or groupItemTitle depending on endpoint
+    const question = m.question || m.title || m.name || m.groupItemTitle || m._eventTitle || '';
+    
+    const city = extractCity(question);
+    const forecast = city ? forecasts[city.name] : null;
+    const parsed = parseWeatherQuestion(question);
+
+    const bucketData = computeBucketSignals({ ...m, question }, forecast);
+
+    // SAFE + CORRECT signal logic
+    let sig = { signal: 'HOLD', edge: null };
+
+    if (bucketData) {
+      const buyEdge = bucketData.bestBuy?.edge ?? null;
+      const sellEdge = bucketData.bestSell?.edge ?? null;
+
+      // Choose strongest edge (by magnitude)
+      if (buyEdge !== null && (sellEdge === null || buyEdge >= Math.abs(sellEdge))) {
+        sig = {
+          signal: buyEdge > 0.12 ? 'BUY_YES' : 'HOLD',
+          edge: buyEdge
+        };
+      } else if (sellEdge !== null) {
+        sig = {
+          signal: sellEdge < -0.12 ? 'BUY_NO' : 'HOLD',
+          edge: sellEdge
+        };
+      }
+    }
+
+    return { ...m, question, city, forecast, parsed, sig };
+  });
+}, [markets, forecasts]);
 
   const displayMarkets = useMemo(() => {
     let filtered = enrichedMarkets;
