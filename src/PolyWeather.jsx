@@ -87,37 +87,85 @@ async function fetchPolyWeatherMarkets() {
 // We parse bucket bounds and compare against forecast to find mispriced buckets.
 
 function parseTempBucket(name) {
-  const n = (name || '').toLowerCase().trim();
-  const isC = n.includes('°c') || n.includes('c)') || n.includes(' c');
+  if (!name) return null;
 
-  // "below X" or "under X" or "< X"
-  const belowM = n.match(/(?:below|under|<)\s*([\d.]+)/);
-  if (belowM) return { lo: -Infinity, hi: parseFloat(belowM[1]), unit: isC ? 'C' : 'F' };
+  const str = name.toLowerCase().replace(/°/g, '').trim();
 
-  // "above X" or "over X" or "> X"
-  const aboveM = n.match(/(?:above|over|>)\s*([\d.]+)/);
-  if (aboveM) return { lo: parseFloat(aboveM[1]), hi: Infinity, unit: isC ? 'C' : 'F' };
+  // Detect unit
+  const unit = str.includes('c') ? 'C' : 'F';
 
-  // "X-Y" or "X to Y" or "between X and Y"
-  const rangeM = n.match(/([\d.]+)\s*(?:-|to|–)\s*([\d.]+)/);
-  if (rangeM) return { lo: parseFloat(rangeM[1]), hi: parseFloat(rangeM[2]), unit: isC ? 'C' : 'F' };
+  // Normalize words
+  const cleaned = str
+    .replace(/fahrenheit|f/g, '')
+    .replace(/celsius|c/g, '')
+    .replace(/to/g, '-')
+    .replace(/\s+/g, '');
 
-  // Single value "exactly X"
-  const singleM = n.match(/([\d.]+)/);
-  if (singleM) {
-    const v = parseFloat(singleM[1]);
-    return { lo: v - 0.5, hi: v + 0.5, unit: isC ? 'C' : 'F' };
+  // Match ranges like 70-75
+  const rangeMatch = cleaned.match(/(-?\d+)\s*-\s*(-?\d+)/);
+  if (rangeMatch) {
+    return {
+      lo: parseFloat(rangeMatch[1]),
+      hi: parseFloat(rangeMatch[2]),
+      unit
+    };
+  }
+
+  // Match "above 80"
+  const aboveMatch = cleaned.match(/above(-?\d+)/);
+  if (aboveMatch) {
+    return {
+      lo: parseFloat(aboveMatch[1]),
+      hi: Infinity,
+      unit
+    };
+  }
+
+  // Match "below 32"
+  const belowMatch = cleaned.match(/below(-?\d+)/);
+  if (belowMatch) {
+    return {
+      lo: -Infinity,
+      hi: parseFloat(belowMatch[1]),
+      unit
+    };
   }
 
   return null;
 }
 
 // Normal CDF approximation — probability that forecast temp (with uncertainty) falls in [lo, hi]
-function bucketProb(forecastTemp, lo, hi, sigma = 2.5) {
-  const logistic = z => 1 / (1 + Math.exp(-1.7 * z));
-  const pBelow  = lo === -Infinity ? 0 : logistic((forecastTemp - lo) / sigma);
-  const pAbove  = hi === Infinity  ? 0 : 1 - logistic((forecastTemp - hi) / sigma);
-  return Math.max(0, Math.min(1, 1 - pBelow - pAbove));
+function bucketProb(temp, lo, hi) {
+  if (temp == null || lo == null || hi == null) return null;
+
+  // Standard deviation (tunable)
+  const sigma = 3; // ~3°C or ~5°F spread
+
+  // Normal CDF
+  const cdf = (x) => 0.5 * (1 + erf((x - temp) / (sigma * Math.sqrt(2))));
+
+  const prob = cdf(hi) - cdf(lo);
+
+  return Math.max(0, Math.min(1, prob));
+}
+
+// Error function approximation
+function erf(x) {
+  const sign = x >= 0 ? 1 : -1;
+  x = Math.abs(x);
+
+  const a1 = 0.254829592;
+  const a2 = -0.284496736;
+  const a3 = 1.421413741;
+  const a4 = -1.453152027;
+  const a5 = 1.061405429;
+  const p = 0.3275911;
+
+  const t = 1 / (1 + p * x);
+  const y = 1 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) *
+    t * Math.exp(-x * x);
+
+  return sign * y;
 }
 
 // ── MAIN SIGNAL LOGIC ─────────────────────────────────────────────────────────
@@ -128,42 +176,65 @@ function computeBucketSignals(market, forecast) {
   if (!rawOutcomes.length) return null;
 
   const question = (market.question || '').toLowerCase();
-  const isHighTemp = /highest|maximum|high temp/.test(question);
-  const isLowTemp  = /lowest|minimum|low temp/.test(question);
 
-  // Pick the right forecast value
+  const isLowTemp = /low|minimum/.test(question);
   const forecastTempC = isLowTemp
     ? forecast.daily.temperature_2m_min?.[0]
-    : forecast.daily.temperature_2m_max?.[0]; // default to high
+    : forecast.daily.temperature_2m_max?.[0];
 
   if (forecastTempC == null) return null;
 
-  // Parse each outcome bucket
   const outcomes = rawOutcomes.map(o => {
-    const name = o.name || o.title || o.value || '';
-    const price = parseFloat(o.price ?? o.probability ?? 0);
+    const name = o.name || o.title || '';
+    
+    let price = parseFloat(o.price ?? o.probability ?? 0);
+
+    // Normalize price
+    if (price > 1) price = price / 100;
+
     const bucket = parseTempBucket(name);
+    if (!bucket) {
+      return { name, price, ourProb: null, edge: null };
+    }
 
-    if (!bucket) return { name, price, ourProb: null, edge: null };
+    const forecastTemp =
+      bucket.unit === 'C'
+        ? forecastTempC
+        : (forecastTempC * 9) / 5 + 32;
 
-    // Convert forecast to bucket's unit
-    const forecastTemp = bucket.unit === 'C'
-      ? forecastTempC
-      : forecastTempC * 9/5 + 32;
-
-    // Convert bucket bounds if needed (already in bucket.unit)
     const ourProb = bucketProb(forecastTemp, bucket.lo, bucket.hi);
+    if (ourProb == null) {
+      return { name, price, ourProb: null, edge: null };
+    }
+
     const edge = ourProb - price;
 
-    return { name, price, ourProb, edge, bucket, forecastTemp };
+    return {
+      name,
+      price,
+      ourProb,
+      edge,
+      bucket,
+      forecastTemp
+    };
   });
 
-  // Best buy signal = largest positive edge (market underpricing this bucket)
-  const withEdge = outcomes.filter(o => o.edge !== null);
-  const bestBuy  = withEdge.reduce((best, o) => (!best || o.edge > best.edge) ? o : best, null);
-  const bestSell = withEdge.reduce((best, o) => (!best || o.edge < best.edge) ? o : best, null);
+  const valid = outcomes.filter(o => o.edge != null);
 
-  return { outcomes, bestBuy, bestSell, forecastTempC };
+  const bestBuy = valid
+    .filter(o => o.edge > 0)
+    .reduce((best, o) => (!best || o.edge > best.edge ? o : best), null);
+
+  const bestSell = valid
+    .filter(o => o.edge < 0)
+    .reduce((best, o) => (!best || o.edge < best.edge ? o : best), null);
+
+  return {
+    outcomes,
+    bestBuy,
+    bestSell,
+    forecastTempC
+  };
 }
 
 // ── SIGNAL CARD ───────────────────────────────────────────────────────────────
